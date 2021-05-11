@@ -10,7 +10,7 @@ def onmf(M, k, rank=5, max_iter=10000):
     H = W.t() @ M
     return W, H
 
-def low_rank_nnpca(M, k, rank=5, max_iter=10000, max_bs=10):
+def low_rank_nnpca(M, k, rank=5, max_iter=10000, max_bs=1):
     bs = min(max_bs, max_iter)
     
     U, S, V = torch.svd(M)
@@ -18,14 +18,15 @@ def low_rank_nnpca(M, k, rank=5, max_iter=10000, max_bs=10):
     US = U[:,:rank] @ torch.diag_embed(S[:rank])
     M_bar = US @ V[:,:rank].t()
     
-    sgns = binarize(torch.Tensor([i for i in range(2**k)]).int(), k)
+    sgns = binarize(torch.arange(2**k).long(), k)
     optval = -float('inf')
     W      = None
     for iter in tqdm(range(max_iter // bs + 1)):
-        C     = sphere_sample_cartesian(rank, k, bs).to(M.device)
-        A     = US @ C
-        W_hat = local_opt_w(A, sgns)
-        val   = torch.norm(M_bar.t() @ W_hat)
+        #C     = sphere_sample_cartesian(rank, k, bs).to(M.device)
+        C        = sphere_sample_cartesian(rank, k).to(M.device)
+        A        = US @ C
+        W_hat, _ = _local_opt_w(A, sgns)
+        val      = torch.norm(M_bar.t() @ W_hat)
         if optval < val:
             optval = val
             W = W_hat
@@ -34,8 +35,23 @@ def low_rank_nnpca(M, k, rank=5, max_iter=10000, max_bs=10):
     return W
 
 
+def _local_opt_w(A, sgns, max_batch=2**15):
+    if len(sgns) >= max_batch:
+        v = -float('inf')
+        optW = None
+        for i in range(len(sgns)//max_batch + 1):
+            _sgns     = sgns[max_batch*i:min(max_batch*(i+1), len(sgns))]
+            if len(_sgns) == 0: continue
+            _optW, _v = local_opt_w_single(A, _sgns)
+            if _v > v:
+                optW = _optW
+                v    = _v
+        return optW, v
+    else:
+        return local_opt_w_single(A, sgns)
+
 ### for single iteration
-def _local_opt_w(A, sgns):
+def local_opt_w_single(A, sgns):
     device = A.device
     A_prime    = A @ torch.diag_embed(sgns).float().to(device)
     mask_jstar = torch.where(
@@ -46,12 +62,13 @@ def _local_opt_w(A, sgns):
     W  = torch.zeros_like(A_prime)
     W  = (mask_jstar * A.unsqueeze(0)) / (torch.norm(mask_jstar * A.unsqueeze(0), dim=1, keepdim=True) + 1e-12)
     tr = (torch.matmul(W.permute(0, 2, 1), A) * torch.eye(A.size(-1)).to(device)).sum(-1).sum(-1)
-    
-    optW = W[torch.argmax(tr)]
-    return optW
+    idx = torch.argmax(tr)
+    optW = W[idx]
+    v    = tr[idx]
+    return optW, v
 
 ### For batch process
-def local_opt_w(A, sgns):
+def local_opt_w_batch(A, sgns):
     assert A.dim() == 3
     device = A.device
     A_prime    = A.unsqueeze(1) @ torch.diag_embed(sgns).float().to(device)
@@ -67,8 +84,9 @@ def local_opt_w(A, sgns):
     idx = torch.argmax(tr)
     _, N = tr.size()
     optW = W[idx//N, idx%N]
+    v    = tr[idx//N, idx%N]
     
-    return optW
+    return optW, v
 
 #def local_opt_w(A, sgns):
 #    optw = None
@@ -122,6 +140,6 @@ if __name__=='__main__':
     #print('-----------')
     #local_opt_w(A, sgns)
     
-    data = torch.eye(5, 5).cuda()
-    W, H = onmf(data, 6, rank=5, max_iter=10000)
+    data = torch.ones(200, 200).cuda()
+    W, H = onmf(data, 20, rank=50, max_iter=1000)
     print(W @ H)
