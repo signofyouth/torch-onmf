@@ -141,5 +141,5 @@ if __name__=='__main__':
     #local_opt_w(A, sgns)
     
     data = torch.ones(200, 200).cuda()
-    W, H = onmf(data, 20, rank=50, max_iter=1000)
+    W, H = onmf(data, 20, rank=5, max_iter=1000)
     print(W @ H)
